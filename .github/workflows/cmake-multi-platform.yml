@@ -43,7 +43,7 @@ jobs:
       run: |
         $pythonDir = Split-Path (Get-Command python).Source
         
-        # -DBUILD_SHARED_LIBS=ON을 추가하여 링커가 .lib(정적) 대신 .dll(동적) 파일을 빌드하도록 강제 유도합니다.
+        # -DBUILD_SHARED_LIBS=ON 플래그를 유지하여 dll 및 동적 라이브러리 생성을 보장합니다.
         cmake -S dnacalib -B build `
           -DCMAKE_BUILD_TYPE=Release `
           -DBUILD_SHARED_LIBS=ON `
@@ -60,23 +60,20 @@ jobs:
     - name: Prepare Blender Addon Package
       shell: powershell
       run: |
-        # 1. 블렌더 내에서 온전히 인식 가능한 애드온 내부 폴더 세팅
+        # 1. 블렌더 내에서 깔끔하게 작동할 전용 애드온 폴더 구조 생성
         New-Item -ItemType Directory -Force -Path "blender_addon/metahuman_dna"
         New-Item -ItemType Directory -Force -Path "blender_addon/metahuman_dna/lib"
         
-        # 2. 파이썬 소스코드 패키지를 블렌더 애드온 폴더로 순차 복사
-        Copy-Item -Path "dna" -Destination "blender_addon/metahuman_dna/" -Recurse -Force
-        Copy-Item -Path "dnacalib" -Destination "blender_addon/metahuman_dna/" -Recurse -Force
-        Copy-Item -Path "dna_viewer" -Destination "blender_addon/metahuman_dna/" -Recurse -Force
-        
-        # 3. 생성된 *.pyd, *.dll, SWIG 생성 *.py 스크립트를 애드온 내부 lib 경로로 안전 수집
+        # 2. 빌드가 완수된 *.pyd, 생성된 *.dll, 그리고 SWIG 파이썬 래퍼(*.py) 파일들을 전용 lib 폴더로 집중 수집합니다.
         Get-ChildItem build -Recurse -Include *.pyd | Copy-Item -Destination "blender_addon/metahuman_dna/lib/" -Force
         Get-ChildItem build -Recurse -Include *dna*.dll, *dnacalib*.dll | Copy-Item -Destination "blender_addon/metahuman_dna/lib/" -Force
+        
+        # 3. 최상위에 생성되었거나 다른 경로에 흩어진 파이썬 인터페이스 스크립트 수집 (동시에 무한 루프 방지 처리)
         Get-ChildItem -Path . -Recurse -Include dnacalib.py, py3dna.py -ErrorAction SilentlyContinue |
             Where-Object { $_.FullName -notlike "*\blender_addon\*" } |
             Copy-Item -Destination "blender_addon/metahuman_dna/lib/" -Force
 
-        # 4. 블렌더 5.1(Python 3.13) 내부 모듈 패스 동적 주입 및 인식용 __init__.py 작성
+        # 4. 블렌더 5.1(Python 3.13) 환경에서 이 내부 도구들의 경로를 자동으로 읽어들이는 스크립트 주입
         $init_content = @"
         bl_info = {
             "name": "MetaHuman DNA Calibration Tools",
@@ -106,7 +103,7 @@ jobs:
     - name: Zip Addon Package (Windows Native)
       shell: powershell
       run: |
-        # 블렌더 상단 'Install Addon' 탭에서 즉시 선택해 설치할 수 있는 ZIP 파일 아카이브 생성
+        # 외부 플러그인에 의존하지 않고 안전하게 최종 블렌더 애드온 압축 파일(.zip)을 생성합니다.
         Compress-Archive -Path "blender_addon/metahuman_dna" -DestinationPath "metahuman_dna_blender5.1_windows.zip" -Force
 
     - name: Upload Addon Archive
