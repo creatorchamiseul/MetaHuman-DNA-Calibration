@@ -42,30 +42,29 @@ jobs:
       shell: pwsh
       run: |
         $pythonDir = Split-Path (Get-Command python).Source
-        # [핵심] SWIG 컴파일러 플래그에 -py3을 적용하여 파이썬 3 타겟팅을 가속합니다.
-        # [수정] CMAKE_CXX_FLAGS에 /D"SWIG_PYTHON_LEGACY_BOOL" 등을 추가하여 구형 매크로 충돌을 방지합니다.
+        # [해결책] -DSWIG_FLAGS 옵션을 통해 SWIG가 소스코드를 만들 때 파이썬 3.13 호환 불가능한 구형 코드를 생성하지 않도록 강제합니다.
         cmake -S dnacalib -B build `
           -DCMAKE_BUILD_TYPE=Release `
           -DBUILD_SHARED_LIBS=OFF `
           -DCMAKE_CXX_STANDARD=17 `
           -DCMAKE_CXX_STANDARD_REQUIRED=ON `
-          -DCMAKE_CXX_FLAGS="/EHsc /W0 /std:c++17 /MT /D_SWIG_NO_THREAD_FOR_PYTHON" `
+          -DCMAKE_CXX_FLAGS="/EHsc /W0 /std:c++17 /MT" `
+          -DSWIG_FLAGS="-D_SWIG_NO_THREAD_FOR_PYTHON" `
           -DPython_EXECUTABLE="$pythonDir\python.exe"
 
     - name: Build
       shell: pwsh
       run: |
-        # 문법 에러가 났던 부분을 정리하고 순수 CMake 병렬 빌드를 수행합니다.
         cmake --build build --config Release --parallel 4
 
     - name: Prepare Blender Addon Package
       shell: powershell
       run: |
-        # 1. 블렌더 고유 ID 형식 규칙에 따라 순수 스네이크 표기법 명칭 폴더 생성
+        # 1. 패키지 구조 생성
         New-Item -ItemType Directory -Force -Path "metahuman_dna"
         New-Item -ItemType Directory -Force -Path "metahuman_dna/lib"
         
-        # 2. 빌드가 완수된 컴파일 결과물을 lib 폴더 내부로 취합 복사
+        # 2. 컴파일 완료된 결과물 전수 수집
         Get-ChildItem build -Recurse -Filter *.pyd | Copy-Item -Destination "metahuman_dna/lib/" -Force
         Get-ChildItem build -Recurse -Filter *.dll | Copy-Item -Destination "metahuman_dna/lib/" -Force
         
@@ -73,7 +72,7 @@ jobs:
             Where-Object { $_.FullName -notlike "*\metahuman_dna\*" } |
             Copy-Item -Destination "metahuman_dna/lib/" -Force
 
-        # 3. 블렌더 5.1 리스트에 강제 강림시키는 blender_manifest.toml 생성
+        # 3. 블렌더 5.1 Extension 규격 매니페스트 생성
         $manifest_content = @"
         schema_version = "1.0.0"
         id = "metahuman_dna"
@@ -93,7 +92,7 @@ jobs:
         
         Set-Content -Path "metahuman_dna/blender_manifest.toml" -Value $manifest_content -Encoding utf8
 
-        # 4. 블렌더 신형 익스텐션 시스템 규격에 호환되는 __init__.py 파일 초기화
+        # 4. 블렌더 5.1 전용 초기화 __init__.py 패치
         $init_content = @"
         import sys
         import os
@@ -102,7 +101,6 @@ jobs:
             current_dir = os.path.dirname(__file__)
             lib_path = os.path.join(current_dir, "lib")
             
-            # Windows 환경 런타임 DLL 탐색 허용 주입
             if hasattr(os, "add_dll_directory"):
                 try:
                     os.add_dll_directory(lib_path)
