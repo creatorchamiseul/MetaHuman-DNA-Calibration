@@ -1,28 +1,23 @@
-name: Build MetaHuman DNA Calibration for Blender 5.1
+name: Build MetaHuman DNA Calibration for Blender 5.1 (Windows Only)
 
 on:
   push:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
-  workflow_dispatch: # 필요할 때 수동으로 빌드를 실행할 수 있는 버튼을 활성화합니다.
+  workflow_dispatch: # GitHub 상에서 수동으로 빌드 버튼을 누를 수 있게 합니다.
 
 jobs:
-  build-addon:
-    name: Build on ${{ matrix.os }} (Python 3.13)
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # 크로스 플랫폼 지원 (Windows와 Linux 빌드)
-        os: [windows-latest, ubuntu-latest]
+  build-windows:
+    name: Build on Windows (Python 3.13)
+    runs-on: windows-latest
 
     steps:
     - name: Checkout Repository
       uses: actions/checkout@v4
       with:
         submodules: recursive
-        lfs: true # 대용량 DNA 샘플 파일이 있으므로 Git LFS를 활성화합니다.
+        lfs: true # 대용량 DNA 파일이 포함되어 있으므로 Git LFS를 활성화합니다.
 
     - name: Set up Python 3.13 (Blender 5.1 Target)
       uses: actions/setup-python@v5
@@ -38,45 +33,33 @@ jobs:
       with:
         cmake-version: '3.25.x'
 
-    # ----------------------------------------------------
-    # 각 OS 환경에 맞는 C++ 컴파일 및 바이너리 빌드 단계
-    # ----------------------------------------------------
-    - name: Configure and Build (Windows)
-      if: matrix.os == 'windows-latest'
+    - name: Configure and Build C++ Library
       run: |
         cmake -B build -DCMAKE_BUILD_TYPE=Release -DPYTHON_EXECUTABLE=python
         cmake --build build --config Release --target all
 
-    - name: Configure and Build (Linux)
-      if: matrix.os == 'ubuntu-latest'
-      run: |
-        cmake -B build -DCMAKE_BUILD_TYPE=Release -DPYTHON_EXECUTABLE=python3
-        cmake --build build --config Release --target all
-
-    # ----------------------------------------------------
-    # 블렌더 5.1 애드온 패키징 구조화 및 압스크립트 배치
-    # ----------------------------------------------------
     - name: Prepare Blender Addon Package
-      shell: bash
+      shell: powershell
       run: |
-        # 애드온으로 묶을 최종 폴더 생성
-        mkdir -p blender_addon/metahuman_dna
+        # 1. 애드온 최종 빌드 폴더 생성
+        New-Item -ItemType Directory -Force -Path "blender_addon/metahuman_dna"
+        New-Item -ItemType Directory -Force -Path "blender_addon/metahuman_dna/lib"
         
-        # 1. 기존 리포지토리의 파이썬 소스코드 복사 (dna, dnacalib, dna_viewer 등)
-        cp -r dna blender_addon/metahuman_dna/
-        cp -r dnacalib blender_addon/metahuman_dna/
-        cp -r dna_viewer blender_addon/metahuman_dna/
+        # 2. 파이썬 소스코드 및 파일들을 애드온 폴더로 복사
+        Copy-Item -Path "dna" -Destination "blender_addon/metahuman_dna/" -Recurse -Force
+        Copy-Item -Path "dnacalib" -Destination "blender_addon/metahuman_dna/" -Recurse -Force
+        Copy-Item -Path "dna_viewer" -Destination "blender_addon/metahuman_dna/" -Recurse -Force
         
-        # 2. 방금 빌드 완료된 C++ 파이썬 바이너리(.pyd 또는 .so)를 라이브러리 폴더로 이동
-        mkdir -p blender_addon/metahuman_dna/lib
-        if [ "${{ matrix.os }}" = "windows-latest" ]; then
-          cp build/lib/Release/*.pyd blender_addon/metahuman_dna/lib/ || true
-        else
-          cp build/lib/*.so blender_addon/metahuman_dna/lib/ || true
-        fi
+        # 3. 방금 빌드된 Windows용 C++ 파이썬 바이너리(.pyd)를 lib 폴더로 복사
+        if (Test-Path "build/lib/Release") {
+            Copy-Item -Path "build/lib/Release/*.pyd" -Destination "blender_addon/metahuman_dna/lib/" -Force
+        } else {
+            Write-Host "Warning: build/lib/Release path not found. Checking fallback paths..."
+            Copy-Item -Path "build/lib/*.pyd" -Destination "blender_addon/metahuman_dna/lib/" -ErrorAction SilentlyContinue
+        }
         
-        # 3. 블렌더 애드온 인식용 __init__.py 파일 동적 생성
-        cat << 'EOF' > blender_addon/metahuman_dna/__init__.py
+        # 4. 블렌더가 인식할 수 있는 __init__.py 파일을 동적으로 생성
+        $init_content = @"
         bl_info = {
             "name": "MetaHuman DNA Calibration Tools",
             "author": "Epic Games / Custom Build",
@@ -91,7 +74,6 @@ jobs:
         import os
 
         def register():
-            # 애드온 로드시 내부 바이너리가 담긴 lib 경로를 시스템 패스에 주입합니다.
             lib_path = os.path.join(os.path.dirname(__file__), "lib")
             if lib_path not in sys.path:
                 sys.path.insert(0, lib_path)
@@ -99,24 +81,18 @@ jobs:
 
         def unregister():
             print("MetaHuman DNA Calibration Unregistered")
-        EOF
+        "@
+        
+        Set-Content -Path "blender_addon/metahuman_dna/__init__.py" -Value $init_content -Encoding utf8
 
-    # ----------------------------------------------------
-    # 최종 결과물을 Zip으로 압축하여 GitHub에 업로드
-    # ----------------------------------------------------
-    - name: Create Addon Zip Archive
-      uses: theskumar/clean-穩@v1 # 폴더 압축 자동화 지원용
-      with:
-        files: blender_addon/metahuman_dna
-      
-    - name: Zip Folder Manual (Fallback)
-      shell: bash
+    - name: Zip Addon Package (Windows Native)
+      shell: powershell
       run: |
-        cd blender_addon
-        zip -r ../metahuman_dna_${{ matrix.os }}.zip metahuman_dna/
+        # 외부 플러그인 없이 윈도우 내장 명령어로 안전하게 압축합니다.
+        Compress-Archive -Path "blender_addon/metahuman_dna" -DestinationPath "metahuman_dna_windows.zip" -Force
 
     - name: Upload Addon Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: metahuman-dna-blender5.1-${{ matrix.os }}
-        path: metahuman_dna_${{ matrix.os }}.zip
+        name: metahuman-dna-blender5.1-windows
+        path: metahuman_dna_windows.zip
