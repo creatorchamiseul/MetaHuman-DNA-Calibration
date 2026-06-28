@@ -42,8 +42,6 @@ jobs:
       shell: pwsh
       run: |
         $pythonDir = Split-Path (Get-Command python).Source
-        
-        # -DBUILD_SHARED_LIBS=ON 플래그를 유지하여 dll 및 동적 라이브러리 생성을 보장합니다.
         cmake -S dnacalib -B build `
           -DCMAKE_BUILD_TYPE=Release `
           -DBUILD_SHARED_LIBS=ON `
@@ -60,51 +58,71 @@ jobs:
     - name: Prepare Blender Addon Package
       shell: powershell
       run: |
-        # 1. 블렌더 내에서 깔끔하게 작동할 전용 애드온 폴더 구조 생성
-        New-Item -ItemType Directory -Force -Path "blender_addon/metahuman_dna"
-        New-Item -ItemType Directory -Force -Path "blender_addon/metahuman_dna/lib"
+        # 1. 블렌더 고유 ID 형식 규칙에 따라 순수 스네이크 표기법 명칭 폴더 생성
+        New-Item -ItemType Directory -Force -Path "metahuman_dna"
+        New-Item -ItemType Directory -Force -Path "metahuman_dna/lib"
         
-        # 2. 빌드가 완수된 *.pyd, 생성된 *.dll, 그리고 SWIG 파이썬 래퍼(*.py) 파일들을 전용 lib 폴더로 집중 수집합니다.
-        Get-ChildItem build -Recurse -Include *.pyd | Copy-Item -Destination "blender_addon/metahuman_dna/lib/" -Force
-        Get-ChildItem build -Recurse -Include *dna*.dll, *dnacalib*.dll | Copy-Item -Destination "blender_addon/metahuman_dna/lib/" -Force
-        
-        # 3. 최상위에 생성되었거나 다른 경로에 흩어진 파이썬 인터페이스 스크립트 수집 (동시에 무한 루프 방지 처리)
+        # 2. 빌드가 완수된 컴파일 결과물을 lib 폴더 내부로 취합 복사
+        Get-ChildItem build -Recurse -Include *.pyd | Copy-Item -Destination "metahuman_dna/lib/" -Force
+        Get-ChildItem build -Recurse -Include *dna*.dll, *dnacalib*.dll | Copy-Item -Destination "metahuman_dna/lib/" -Force
         Get-ChildItem -Path . -Recurse -Include dnacalib.py, py3dna.py -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -notlike "*\blender_addon\*" } |
-            Copy-Item -Destination "blender_addon/metahuman_dna/lib/" -Force
+            Where-Object { $_.FullName -notlike "*\metahuman_dna\*" } |
+            Copy-Item -Destination "metahuman_dna/lib/" -Force
 
-        # 4. 블렌더 5.1(Python 3.13) 환경에서 이 내부 도구들의 경로를 자동으로 읽어들이는 스크립트 주입
+        # 3. [핵심 변경] 블렌더 5.1 리스트에 강제 강림시키는 blender_manifest.toml 생성 (bl_info 완벽 대체)
+        # 이 파일이 확장 패키지의 최상단(Root)에 존재해야만 블렌더 에드온 리스트가 차단하지 않고 정식 노출합니다.
+        $manifest_content = @"
+        schema_version = "1.0.0"
+        id = "metahuman_dna"
+        version = "1.0.0"
+        name = "MetaHuman DNA Calibration Tools"
+        tagline = "MetaHuman DNA Calibration tools inside Blender 5.1"
+        maintainer = "Epic Games / Custom Build"
+        type = "add-on"
+        website = "https://github.com"
+
+        [blender_version]
+        min = "5.1.0"
+
+        [platforms]
+        windows-x64 = "*"
+        "@
+        
+        Set-Content -Path "metahuman_dna/blender_manifest.toml" -Value $manifest_content -Encoding utf8
+
+        # 4. 블렌더 신형 익스텐션 시스템 규격에 호환되는 깔끔한 __init__.py 파일 초기화
         $init_content = @"
-        bl_info = {
-            "name": "MetaHuman DNA Calibration Tools",
-            "author": "Epic Games / Custom Build",
-            "version": (1, 0, 0),
-            "blender": (5, 1, 0),
-            "location": "View3D > Sidebar > MetaHuman",
-            "description": "MetaHuman DNA Calibration tools inside Blender 5.1",
-            "category": "Animation",
-        }
-
         import sys
         import os
 
         def register():
-            lib_path = os.path.join(os.path.dirname(__file__), "lib")
-            if lib_path not in sys.path:
-                sys.path.insert(0, lib_path)
-            print("MetaHuman DNA Calibration Registered successfully for Blender 5.1")
+            current_dir = os.path.dirname(__file__)
+            lib_path = os.path.join(current_dir, "lib")
+            
+            # Windows 환경 런타임 DLL 탐색 허용 주입
+            if hasattr(os, "add_dll_directory"):
+                try:
+                    os.add_dll_directory(lib_path)
+                except Exception as e:
+                    print(f"[MetaHuman DNA] DLL directory add failed: {e}")
+                    
+            paths_to_add = [current_dir, lib_path]
+            for p in paths_to_add:
+                if p not in sys.path:
+                    sys.path.insert(0, p)
+            print("[-] MetaHuman DNA Calibration Toolkit successfully system-linked.")
 
         def unregister():
-            print("MetaHuman DNA Calibration Unregistered")
+            pass
         "@
         
-        Set-Content -Path "blender_addon/metahuman_dna/__init__.py" -Value $init_content -Encoding utf8
+        Set-Content -Path "metahuman_dna/__init__.py" -Value $init_content -Encoding utf8
 
-    - name: Zip Addon Package (Windows Native)
+    - name: Zip Addon Package (Strict Flat Root Structure)
       shell: powershell
       run: |
-        # 외부 플러그인에 의존하지 않고 안전하게 최종 블렌더 애드온 압축 파일(.zip)을 생성합니다.
-        Compress-Archive -Path "blender_addon/metahuman_dna" -DestinationPath "metahuman_dna_blender5.1_windows.zip" -Force
+        # 빈 상위 깊이를 완전히 파괴하고 metahuman_dna 폴더 자체가 다이렉트 루트 구조가 되도록 압축합니다.
+        Compress-Archive -Path "metahuman_dna" -DestinationPath "metahuman_dna_blender5.1_windows.zip" -Force
 
     - name: Upload Addon Archive
       uses: actions/upload-artifact@v4
