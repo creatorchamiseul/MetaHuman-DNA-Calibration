@@ -42,12 +42,14 @@ jobs:
       shell: pwsh
       run: |
         $pythonDir = Split-Path (Get-Command python).Source
+        # [수정] BUILD_SHARED_LIBS=OFF로 변경하여 외부 의존성 DLL 생성을 억제합니다.
+        # [수정] CMAKE_CXX_FLAGS에 /MT를 추가하여 Windows C++ 런타임을 바이너리 내부에 완전히 정적 결합합니다.
         cmake -S dnacalib -B build `
           -DCMAKE_BUILD_TYPE=Release `
-          -DBUILD_SHARED_LIBS=ON `
+          -DBUILD_SHARED_LIBS=OFF `
           -DCMAKE_CXX_STANDARD=17 `
           -DCMAKE_CXX_STANDARD_REQUIRED=ON `
-          -DCMAKE_CXX_FLAGS="/EHsc /W0 /std:c++17" `
+          -DCMAKE_CXX_FLAGS="/EHsc /W0 /std:c++17 /MT" `
           -DPython_EXECUTABLE="$pythonDir\python.exe"
 
     - name: Build
@@ -62,15 +64,15 @@ jobs:
         New-Item -ItemType Directory -Force -Path "metahuman_dna"
         New-Item -ItemType Directory -Force -Path "metahuman_dna/lib"
         
-        # 2. 빌드가 완수된 컴파일 결과물을 lib 폴더 내부로 취합 복사
-        Get-ChildItem build -Recurse -Include *.pyd | Copy-Item -Destination "metahuman_dna/lib/" -Force
-        Get-ChildItem build -Recurse -Include *dna*.dll, *dnacalib*.dll | Copy-Item -Destination "metahuman_dna/lib/" -Force
+        # 2. [수정] 이름 패턴 매칭 필터를 제거하고, build 폴더에서 생성된 모든 .pyd 및 .dll 파일을 전수 수집합니다.
+        Get-ChildItem build -Recurse -Filter *.pyd | Copy-Item -Destination "metahuman_dna/lib/" -Force
+        Get-ChildItem build -Recurse -Filter *.dll | Copy-Item -Destination "metahuman_dna/lib/" -Force
+        
         Get-ChildItem -Path . -Recurse -Include dnacalib.py, py3dna.py -ErrorAction SilentlyContinue |
             Where-Object { $_.FullName -notlike "*\metahuman_dna\*" } |
             Copy-Item -Destination "metahuman_dna/lib/" -Force
 
-        # 3. [핵심 변경] 블렌더 5.1 리스트에 강제 강림시키는 blender_manifest.toml 생성 (bl_info 완벽 대체)
-        # 이 파일이 확장 패키지의 최상단(Root)에 존재해야만 블렌더 에드온 리스트가 차단하지 않고 정식 노출합니다.
+        # 3. 블렌더 5.x 확장 패키지 리스트 노출을 위한 신형 규격 매니페스트 파일 생성
         $manifest_content = @"
         schema_version = "1.0.0"
         id = "metahuman_dna"
@@ -82,7 +84,7 @@ jobs:
         website = "https://github.com"
 
         [blender_version]
-        min = "5.1.0"
+        min = "5.0.0"
 
         [platforms]
         windows-x64 = "*"
@@ -90,7 +92,7 @@ jobs:
         
         Set-Content -Path "metahuman_dna/blender_manifest.toml" -Value $manifest_content -Encoding utf8
 
-        # 4. 블렌더 신형 익스텐션 시스템 규격에 호환되는 깔끔한 __init__.py 파일 초기화
+        # 4. 블렌더 내부에서 시스템 로드 시 경로 진입을 허용하는 초기화 파일 생성
         $init_content = @"
         import sys
         import os
@@ -99,7 +101,7 @@ jobs:
             current_dir = os.path.dirname(__file__)
             lib_path = os.path.join(current_dir, "lib")
             
-            # Windows 환경 런타임 DLL 탐색 허용 주입
+            # Windows 환경에서 외부 라이브러리 디렉터리 참조 허용 주입
             if hasattr(os, "add_dll_directory"):
                 try:
                     os.add_dll_directory(lib_path)
@@ -121,7 +123,6 @@ jobs:
     - name: Zip Addon Package (Strict Flat Root Structure)
       shell: powershell
       run: |
-        # 빈 상위 깊이를 완전히 파괴하고 metahuman_dna 폴더 자체가 다이렉트 루트 구조가 되도록 압축합니다.
         Compress-Archive -Path "metahuman_dna" -DestinationPath "metahuman_dna_blender5.1_windows.zip" -Force
 
     - name: Upload Addon Archive
