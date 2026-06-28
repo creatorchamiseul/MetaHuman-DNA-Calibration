@@ -42,41 +42,44 @@ jobs:
       shell: pwsh
       run: |
         $pythonDir = Split-Path (Get-Command python).Source
-        # 에픽게임즈 소스코드 구조에 맞게 BUILD_SHARED_LIBS=ON(동적 라이브러리) 모드로 확실히 고정합니다.
-        # Python 3.13에서 사멸한 구형 스레드 래퍼 코드가 빌드되지 않도록 예방 매크로를 선언합니다.
+        # [복구] 원래의 구조대로 BUILD_SHARED_LIBS=ON(동적 라이브러리)으로 빌드합니다.
+        # [핵심] CMake 자체 설치 경로를 미리 생성할 패키지 내부 폴더로 지정해버립니다.
         cmake -S dnacalib -B build `
           -DCMAKE_BUILD_TYPE=Release `
           -DBUILD_SHARED_LIBS=ON `
           -DCMAKE_CXX_STANDARD=17 `
           -DCMAKE_CXX_STANDARD_REQUIRED=ON `
           -DCMAKE_CXX_FLAGS="/EHsc /W0 /std:c++17 /MD /D_SWIG_NO_THREAD_FOR_PYTHON" `
-          -DPython_EXECUTABLE="$pythonDir\python.exe"
+          -DPython_EXECUTABLE="$pythonDir\python.exe" `
+          -DCMAKE_INSTALL_PREFIX="$pwd\metahuman_dna\lib"
 
-    - name: Build
+    - name: Build and Install C++ Binaries
       shell: pwsh
       run: |
+        # 1. C++ 코드를 빌드합니다.
         cmake --build build --config Release --parallel 4
+        
+        # 2. 파워쉘 카피 명령을 쓰지 않고, CMake 엔진이 직접 .pyd와 dnacalib.dll을 'metahuman_dna/lib' 폴더에 알아서 정렬하여 배출하게 만듭니다.
+        cmake --install build --config Release
 
     - name: Prepare Blender Addon Package
       shell: powershell
       run: |
-        # 1. 수집용 폴더 구조 생성
-        New-Item -ItemType Directory -Force -Path "metahuman_dna"
-        New-Item -ItemType Directory -Force -Path "metahuman_dna/lib"
-        
-        # 2. [강력 조치] 복사 누락 전면 차단
-        # 파일 이름을 따지지 않고, build 폴더 하위의 모든 .pyd와 .dll 파일을 예외 없이 metahuman_dna/lib/ 폴더로 복사합니다.
-        Get-ChildItem build -Recurse -Include *.pyd, *.dll -ErrorAction SilentlyContinue | ForEach-Object {
-            Copy-Item -Path $_.FullName -Destination "metahuman_dna/lib/" -Force
-            Write-Host "[✓] Collected Binary: $($_.Name)"
+        # 3. [보완] 만약 빌드 타겟 경로 이슈로 lib 폴더가 미생성된 경우를 대비해 물리적 폴더 강제 보장 구조 배치
+        if (-not (Test-Path "metahuman_dna/lib")) {
+            New-Item -ItemType Directory -Force -Path "metahuman_dna/lib"
         }
         
-        # 3. 파이썬 소스 코드 파일 복사
+        # 4. 혹시 모를 경로 파편화를 위해 build 폴더 내의 모든 .pyd 및 .dll 안전장치 수집 (단순 1줄 명령어로 통일)
+        Copy-Item -Path "build\Release\*" -Destination "metahuman_dna/lib\" -Recurse -Filter *.pyd -Force -ErrorAction SilentlyContinue
+        Copy-Item -Path "build\Release\*" -Destination "metahuman_dna/lib\" -Recurse -Filter *.dll -Force -ErrorAction SilentlyContinue
+        
+        # 5. 파이썬 연결 래퍼 스크립트(.py) 배치
         Get-ChildItem -Path . -Recurse -Include dnacalib.py, py3dna.py -ErrorAction SilentlyContinue |
             Where-Object { $_.FullName -notlike "*\metahuman_dna\*" } |
             Copy-Item -Destination "metahuman_dna/lib/" -Force
 
-        # 4. 블렌더 5.1 확장 기능 인식용 매니페스트 생성
+        # 6. 블렌더 5.1 Extension 전용 매니페스트 설정
         $manifest_content = @"
         schema_version = "1.0.0"
         id = "metahuman_dna"
@@ -96,7 +99,7 @@ jobs:
         
         Set-Content -Path "metahuman_dna/blender_manifest.toml" -Value $manifest_content -Encoding utf8
 
-        # 5. 블렌더 내에서 로드될 때 lib 폴더 안의 dnacalib.dll 및 .pyd 파일들을 자동 바인딩하는 초기화 파일
+        # 7. 블렌더 5.1 구동 핵심 초기화 스크립트 작성
         $init_content = @"
         import sys
         import os
@@ -105,7 +108,7 @@ jobs:
             current_dir = os.path.dirname(__file__)
             lib_path = os.path.join(current_dir, "lib")
             
-            # 파이썬 래퍼가 동급 경로상의 dnacalib.dll을 탐색할 수 있도록 허용 주입
+            # 윈도우 환경에서 _py3dnacalib.pyd가 같은 방에 있는 dnacalib.dll을 조화롭게 인식하도록 디렉터리 바인딩
             if hasattr(os, "add_dll_directory"):
                 try:
                     os.add_dll_directory(lib_path)
