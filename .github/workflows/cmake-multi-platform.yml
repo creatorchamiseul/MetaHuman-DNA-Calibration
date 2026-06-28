@@ -42,8 +42,8 @@ jobs:
       shell: pwsh
       run: |
         $pythonDir = Split-Path (Get-Command python).Source
-        # 원래의 안정적인 동적 공유 라이브러리 빌드(ON)로 복구합니다.
-        # Python 3.13 환경에서 구형 스레드 매크로 충돌을 방지하는 전역 플래그를 심습니다.
+        # 에픽게임즈 소스코드 구조에 맞게 BUILD_SHARED_LIBS=ON(동적 라이브러리) 모드로 확실히 고정합니다.
+        # Python 3.13에서 사멸한 구형 스레드 래퍼 코드가 빌드되지 않도록 예방 매크로를 선언합니다.
         cmake -S dnacalib -B build `
           -DCMAKE_BUILD_TYPE=Release `
           -DBUILD_SHARED_LIBS=ON `
@@ -60,20 +60,23 @@ jobs:
     - name: Prepare Blender Addon Package
       shell: powershell
       run: |
-        # 1. 패키지 기본 구조 초기화
+        # 1. 수집용 폴더 구조 생성
         New-Item -ItemType Directory -Force -Path "metahuman_dna"
         New-Item -ItemType Directory -Force -Path "metahuman_dna/lib"
         
-        # 2. [핵심] 꼬여있던 복사 경로를 전면 전수조사 방식으로 수정
-        # Release 빌드 폴더 내부에 파편화된 모든 .pyd 파일과 중요 .dll 파일들을 완벽하게 수집합니다.
-        Get-ChildItem "build/Release" -Recurse -Include *.pyd, *.dll -ErrorAction SilentlyContinue | Copy-Item -Destination "metahuman_dna/lib/" -Force
+        # 2. [강력 조치] 복사 누락 전면 차단
+        # 파일 이름을 따지지 않고, build 폴더 하위의 모든 .pyd와 .dll 파일을 예외 없이 metahuman_dna/lib/ 폴더로 복사합니다.
+        Get-ChildItem build -Recurse -Include *.pyd, *.dll -ErrorAction SilentlyContinue | ForEach-Object {
+            Copy-Item -Path $_.FullName -Destination "metahuman_dna/lib/" -Force
+            Write-Host "[✓] Collected Binary: $($_.Name)"
+        }
         
-        # 3. 파이썬 소스 래퍼 파일 복사
+        # 3. 파이썬 소스 코드 파일 복사
         Get-ChildItem -Path . -Recurse -Include dnacalib.py, py3dna.py -ErrorAction SilentlyContinue |
             Where-Object { $_.FullName -notlike "*\metahuman_dna\*" } |
             Copy-Item -Destination "metahuman_dna/lib/" -Force
 
-        # 4. 블렌더 5.1 규격 매니페스트 생성
+        # 4. 블렌더 5.1 확장 기능 인식용 매니페스트 생성
         $manifest_content = @"
         schema_version = "1.0.0"
         id = "metahuman_dna"
@@ -93,7 +96,7 @@ jobs:
         
         Set-Content -Path "metahuman_dna/blender_manifest.toml" -Value $manifest_content -Encoding utf8
 
-        # 5. 블렌더 5.1 런타임 진입 시 lib 폴더 안의 dnacalib.dll을 자동 인식하게 만드는 __init__.py
+        # 5. 블렌더 내에서 로드될 때 lib 폴더 안의 dnacalib.dll 및 .pyd 파일들을 자동 바인딩하는 초기화 파일
         $init_content = @"
         import sys
         import os
@@ -102,7 +105,7 @@ jobs:
             current_dir = os.path.dirname(__file__)
             lib_path = os.path.join(current_dir, "lib")
             
-            # 이 구문이 있어야 파이썬이 같은 폴더에 있는 dnacalib.dll을 찾아 로드합니다.
+            # 파이썬 래퍼가 동급 경로상의 dnacalib.dll을 탐색할 수 있도록 허용 주입
             if hasattr(os, "add_dll_directory"):
                 try:
                     os.add_dll_directory(lib_path)
