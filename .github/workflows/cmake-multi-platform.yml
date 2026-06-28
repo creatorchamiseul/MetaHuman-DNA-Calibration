@@ -42,46 +42,30 @@ jobs:
       shell: pwsh
       run: |
         $pythonDir = Split-Path (Get-Command python).Source
+        # [핵심] SWIG 컴파일러 플래그에 -py3을 적용하여 파이썬 3 타겟팅을 가속합니다.
+        # [수정] CMAKE_CXX_FLAGS에 /D"SWIG_PYTHON_LEGACY_BOOL" 등을 추가하여 구형 매크로 충돌을 방지합니다.
         cmake -S dnacalib -B build `
           -DCMAKE_BUILD_TYPE=Release `
           -DBUILD_SHARED_LIBS=OFF `
           -DCMAKE_CXX_STANDARD=17 `
           -DCMAKE_CXX_STANDARD_REQUIRED=ON `
-          -DCMAKE_CXX_FLAGS="/EHsc /W0 /std:c++17 /MT" `
+          -DCMAKE_CXX_FLAGS="/EHsc /W0 /std:c++17 /MT /D_SWIG_NO_THREAD_FOR_PYTHON" `
           -DPython_EXECUTABLE="$pythonDir\python.exe"
-
-    # [핵심 추가] SWIG 가 생성한 C++ 코드에서 파이썬 3.13 호환 불가능한 구형 API 제거 강제 패치
-    - name: Patch SWIG Python 3.13 Compat
-      shell: pwsh
-      run: |
-        # CMake 빌드 트리를 미리 트리거하여 SWIG .cxx 소스파일을 생성시킵니다.
-        cmake --build build --target dnacalib_python_swig_compilation --config Release -j 2 ErrorAction SilentlyContinue
-        
-        # 생성된 SWIG 결과물 파일들을 추적하여 수정합니다.
-        Get-ChildItem build -Recurse -Filter *.cxx | ForEach-Object {
-            $cxxFile = $_.FullName
-            if (Test-Path $cxxFile) {
-                $text = Get-Content $cxxFile -Raw
-                # Python 3.11+ 에서 제거된 PyEval_InitThreads() 호출부를 공백 처리하여 소멸시킵니다.
-                if ($text -match "PyEval_InitThreads\(\)") {
-                    $text = $text -replace "PyEval_InitThreads\(\);", "// PyEval_InitThreads(); (Patched for Python 3.13)"
-                    Set-Content -Path $cxxFile -Value $text -Encoding utf8
-                    Write-Host "[✓] Patched Python 3.13 compatibility for: $cxxFile"
-                }
-            }
-        }
 
     - name: Build
       shell: pwsh
       run: |
+        # 문법 에러가 났던 부분을 정리하고 순수 CMake 병렬 빌드를 수행합니다.
         cmake --build build --config Release --parallel 4
 
     - name: Prepare Blender Addon Package
       shell: powershell
       run: |
+        # 1. 블렌더 고유 ID 형식 규칙에 따라 순수 스네이크 표기법 명칭 폴더 생성
         New-Item -ItemType Directory -Force -Path "metahuman_dna"
         New-Item -ItemType Directory -Force -Path "metahuman_dna/lib"
         
+        # 2. 빌드가 완수된 컴파일 결과물을 lib 폴더 내부로 취합 복사
         Get-ChildItem build -Recurse -Filter *.pyd | Copy-Item -Destination "metahuman_dna/lib/" -Force
         Get-ChildItem build -Recurse -Filter *.dll | Copy-Item -Destination "metahuman_dna/lib/" -Force
         
@@ -89,6 +73,7 @@ jobs:
             Where-Object { $_.FullName -notlike "*\metahuman_dna\*" } |
             Copy-Item -Destination "metahuman_dna/lib/" -Force
 
+        # 3. 블렌더 5.1 리스트에 강제 강림시키는 blender_manifest.toml 생성
         $manifest_content = @"
         schema_version = "1.0.0"
         id = "metahuman_dna"
@@ -108,6 +93,7 @@ jobs:
         
         Set-Content -Path "metahuman_dna/blender_manifest.toml" -Value $manifest_content -Encoding utf8
 
+        # 4. 블렌더 신형 익스텐션 시스템 규격에 호환되는 __init__.py 파일 초기화
         $init_content = @"
         import sys
         import os
@@ -116,6 +102,7 @@ jobs:
             current_dir = os.path.dirname(__file__)
             lib_path = os.path.join(current_dir, "lib")
             
+            # Windows 환경 런타임 DLL 탐색 허용 주입
             if hasattr(os, "add_dll_directory"):
                 try:
                     os.add_dll_directory(lib_path)
