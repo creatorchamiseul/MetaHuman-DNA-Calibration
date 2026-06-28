@@ -63,6 +63,7 @@ jobs:
         Get-ChildItem build -Recurse -Include *dna*.dll, *dnacalib*.dll | Copy-Item -Destination "output/" -Force
 
         Get-ChildItem -Path . -Recurse -Include dnacalib.py, py3dna.py -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notlike "*\output\*" } |
             Copy-Item -Destination "output/" -Force
 
         Get-ChildItem output
