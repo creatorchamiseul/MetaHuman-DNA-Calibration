@@ -1,11 +1,11 @@
-name: Build MetaHuman DNA Calibration (Windows + Python 3.13)
+name: Build MetaHuman DNA Calibration (Blender 5.1 Addon - Windows Only)
 
 on:
   workflow_dispatch:
 
 jobs:
   build-windows:
-    name: Build on Windows
+    name: Build Blender 5.1 Addon on Windows
     runs-on: windows-latest
 
     steps:
@@ -42,8 +42,11 @@ jobs:
       shell: pwsh
       run: |
         $pythonDir = Split-Path (Get-Command python).Source
+        
+        # -DBUILD_SHARED_LIBS=ON을 추가하여 링커가 .lib(정적) 대신 .dll(동적) 파일을 빌드하도록 강제 유도합니다.
         cmake -S dnacalib -B build `
           -DCMAKE_BUILD_TYPE=Release `
+          -DBUILD_SHARED_LIBS=ON `
           -DCMAKE_CXX_STANDARD=17 `
           -DCMAKE_CXX_STANDARD_REQUIRED=ON `
           -DCMAKE_CXX_FLAGS="/EHsc /W0 /std:c++17" `
@@ -54,22 +57,60 @@ jobs:
       run: |
         cmake --build build --config Release --parallel 4
 
-    - name: Collect output files
-      shell: pwsh
+    - name: Prepare Blender Addon Package
+      shell: powershell
       run: |
-        New-Item -ItemType Directory -Force -Path "output"
-
-        Get-ChildItem build -Recurse -Include *.pyd | Copy-Item -Destination "output/" -Force
-        Get-ChildItem build -Recurse -Include *dna*.dll, *dnacalib*.dll | Copy-Item -Destination "output/" -Force
-
+        # 1. 블렌더 내에서 온전히 인식 가능한 애드온 내부 폴더 세팅
+        New-Item -ItemType Directory -Force -Path "blender_addon/metahuman_dna"
+        New-Item -ItemType Directory -Force -Path "blender_addon/metahuman_dna/lib"
+        
+        # 2. 파이썬 소스코드 패키지를 블렌더 애드온 폴더로 순차 복사
+        Copy-Item -Path "dna" -Destination "blender_addon/metahuman_dna/" -Recurse -Force
+        Copy-Item -Path "dnacalib" -Destination "blender_addon/metahuman_dna/" -Recurse -Force
+        Copy-Item -Path "dna_viewer" -Destination "blender_addon/metahuman_dna/" -Recurse -Force
+        
+        # 3. 생성된 *.pyd, *.dll, SWIG 생성 *.py 스크립트를 애드온 내부 lib 경로로 안전 수집
+        Get-ChildItem build -Recurse -Include *.pyd | Copy-Item -Destination "blender_addon/metahuman_dna/lib/" -Force
+        Get-ChildItem build -Recurse -Include *dna*.dll, *dnacalib*.dll | Copy-Item -Destination "blender_addon/metahuman_dna/lib/" -Force
         Get-ChildItem -Path . -Recurse -Include dnacalib.py, py3dna.py -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -notlike "*\output\*" } |
-            Copy-Item -Destination "output/" -Force
+            Where-Object { $_.FullName -notlike "*\blender_addon\*" } |
+            Copy-Item -Destination "blender_addon/metahuman_dna/lib/" -Force
 
-        Get-ChildItem output
+        # 4. 블렌더 5.1(Python 3.13) 내부 모듈 패스 동적 주입 및 인식용 __init__.py 작성
+        $init_content = @"
+        bl_info = {
+            "name": "MetaHuman DNA Calibration Tools",
+            "author": "Epic Games / Custom Build",
+            "version": (1, 0, 0),
+            "blender": (5, 1, 0),
+            "location": "View3D > Sidebar > MetaHuman",
+            "description": "MetaHuman DNA Calibration tools inside Blender 5.1",
+            "category": "Animation",
+        }
 
-    - name: Upload output files
+        import sys
+        import os
+
+        def register():
+            lib_path = os.path.join(os.path.dirname(__file__), "lib")
+            if lib_path not in sys.path:
+                sys.path.insert(0, lib_path)
+            print("MetaHuman DNA Calibration Registered successfully for Blender 5.1")
+
+        def unregister():
+            print("MetaHuman DNA Calibration Unregistered")
+        "@
+        
+        Set-Content -Path "blender_addon/metahuman_dna/__init__.py" -Value $init_content -Encoding utf8
+
+    - name: Zip Addon Package (Windows Native)
+      shell: powershell
+      run: |
+        # 블렌더 상단 'Install Addon' 탭에서 즉시 선택해 설치할 수 있는 ZIP 파일 아카이브 생성
+        Compress-Archive -Path "blender_addon/metahuman_dna" -DestinationPath "metahuman_dna_blender5.1_windows.zip" -Force
+
+    - name: Upload Addon Archive
       uses: actions/upload-artifact@v4
       with:
-        name: dnacalib-python3.13-windows
-        path: output
+        name: MetaHuman-DNA-Blender5.1-Addon
+        path: metahuman_dna_blender5.1_windows.zip
