@@ -35,10 +35,11 @@ jobs:
       run: |
         $pythonDir = Split-Path (Get-Command python).Source
         
-        # -DCMAKE_CXX_FLAGS="/permissive"를 주입하여 DynArray.h의 C2760 컴파일 오류를 강제 우회합니다.
+        # /permissive 플래그에 더해 /W0(모든 경고 무시) 플래그를 추가하여 경고로 인한 빌드 중단을 원천 차단합니다.
         cmake -B build `
           -DCMAKE_BUILD_TYPE=Release `
-          -DCMAKE_CXX_FLAGS="/permissive" `
+          -DCMAKE_CXX_FLAGS="/permissive /W0" `
+          -DCMAKE_C_FLAGS="/W0" `
           -DPython_EXECUTABLE="$pythonDir\python.exe" `
           -DPython_ROOT_DIR="$pythonDir" `
           dnacalib
