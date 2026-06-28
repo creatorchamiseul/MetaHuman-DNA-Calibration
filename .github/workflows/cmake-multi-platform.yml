@@ -35,6 +35,42 @@ jobs:
         $env:Path = "C:\ProgramData\chocolatey\bin;$env:Path"
         swig -version
 
+    - name: Patch DynArray.h (Fix C3878 error)
+      shell: pwsh
+      run: |
+        $file = "dnacalib/DNACalib/src/terse/types/DynArray.h"
+        
+        if (Test-Path $file) {
+            $content = Get-Content $file -Raw
+            
+            # stdext::checked_array_iterator 부분을 일반 copy로 교체
+            $oldBlock = @"
+            #if defined(_MSC_VER) && !defined(__clang__)
+                if (size() != 0ul) {
+                    std::copy(start, end, stdext::checked_array_iterator<value_type*>(data(), size()));
+                }
+            #else
+                std::copy(start, end, data());
+            #endif
+"@
+            
+            $newBlock = @"
+            #if defined(_MSC_VER) && !defined(__clang__)
+                if (size() != 0ul) {
+                    std::copy(start, end, data());
+                }
+            #else
+                std::copy(start, end, data());
+            #endif
+"@
+            
+            $content = $content.Replace($oldBlock, $newBlock)
+            Set-Content -Path $file -Value $content -Encoding utf8
+            Write-Host "DynArray.h patched successfully (removed checked_array_iterator)"
+        } else {
+            Write-Host "DynArray.h not found"
+        }
+
     - name: Configure CMake
       shell: pwsh
       run: |
@@ -55,25 +91,21 @@ jobs:
       run: |
         cmake --build build --config Release --parallel 4
 
-    - name: Collect output files (_pyd + dll + dnacalib.py)
+    - name: Collect output files
       shell: pwsh
       run: |
         New-Item -ItemType Directory -Force -Path "output"
 
-        # .pyd 파일 복사
         Get-ChildItem build -Recurse -Include *.pyd | Copy-Item -Destination "output/" -Force
-
-        # dnacalib 관련 .dll 파일 복사
         Get-ChildItem build -Recurse -Include dnacalib*.dll | Copy-Item -Destination "output/" -Force
 
-        # dnacalib.py 복사 (빌드 결과물 또는 소스에서)
         if (Test-Path "build/dnacalib.py") {
             Copy-Item "build/dnacalib.py" -Destination "output/" -Force
         } elseif (Test-Path "dnacalib/dnacalib.py") {
             Copy-Item "dnacalib/dnacalib.py" -Destination "output/" -Force
         }
 
-        Write-Host "=== output 폴더에 들어간 파일 ==="
+        Write-Host "=== output 폴더 파일 목록 ==="
         Get-ChildItem output | Select-Object Name, Length
 
     - name: Upload output files
