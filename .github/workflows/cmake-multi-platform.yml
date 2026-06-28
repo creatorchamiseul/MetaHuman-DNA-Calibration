@@ -35,9 +35,10 @@ jobs:
       run: |
         $pythonDir = Split-Path (Get-Command python).Source
         
-        # 실제 CMakeLists.txt가 있는 dnacalib 폴더를 빌드 타겟 소스로 명시합니다.
+        # -DCMAKE_CXX_FLAGS="/permissive"를 주입하여 DynArray.h의 C2760 컴파일 오류를 강제 우회합니다.
         cmake -B build `
           -DCMAKE_BUILD_TYPE=Release `
+          -DCMAKE_CXX_FLAGS="/permissive" `
           -DPython_EXECUTABLE="$pythonDir\python.exe" `
           -DPython_ROOT_DIR="$pythonDir" `
           dnacalib
