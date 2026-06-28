@@ -33,42 +33,17 @@ jobs:
       shell: pwsh
       run: |
         $env:Path = "C:\ProgramData\chocolatey\bin;$env:Path"
-        swig -version
 
-    - name: Patch DynArray.h (Fix C3878 error)
+    - name: Patch DynArray.h (Fix C3878)
       shell: pwsh
       run: |
         $file = "dnacalib/DNACalib/src/terse/types/DynArray.h"
-        
+
         if (Test-Path $file) {
             $content = Get-Content $file -Raw
-            
-            # stdext::checked_array_iterator 부분을 일반 copy로 교체
-            $oldBlock = @"
-            #if defined(_MSC_VER) && !defined(__clang__)
-                if (size() != 0ul) {
-                    std::copy(start, end, stdext::checked_array_iterator<value_type*>(data(), size()));
-                }
-            #else
-                std::copy(start, end, data());
-            #endif
-"@
-            
-            $newBlock = @"
-            #if defined(_MSC_VER) && !defined(__clang__)
-                if (size() != 0ul) {
-                    std::copy(start, end, data());
-                }
-            #else
-                std::copy(start, end, data());
-            #endif
-"@
-            
-            $content = $content.Replace($oldBlock, $newBlock)
+            $content = $content -replace 'std::copy\(start, end, stdext::checked_array_iterator<value_type\*>\(data\(\), size\(\)\)\);', 'std::copy(start, end, data());'
             Set-Content -Path $file -Value $content -Encoding utf8
-            Write-Host "DynArray.h patched successfully (removed checked_array_iterator)"
-        } else {
-            Write-Host "DynArray.h not found"
+            Write-Host "DynArray.h patched successfully"
         }
 
     - name: Configure CMake
@@ -95,7 +70,6 @@ jobs:
       shell: pwsh
       run: |
         New-Item -ItemType Directory -Force -Path "output"
-
         Get-ChildItem build -Recurse -Include *.pyd | Copy-Item -Destination "output/" -Force
         Get-ChildItem build -Recurse -Include dnacalib*.dll | Copy-Item -Destination "output/" -Force
 
@@ -105,12 +79,10 @@ jobs:
             Copy-Item "dnacalib/dnacalib.py" -Destination "output/" -Force
         }
 
-        Write-Host "=== output 폴더 파일 목록 ==="
-        Get-ChildItem output | Select-Object Name, Length
+        Get-ChildItem output
 
     - name: Upload output files
       uses: actions/upload-artifact@v4
       with:
         name: dnacalib-python3.13-windows
         path: output
-        retention-days: 14
