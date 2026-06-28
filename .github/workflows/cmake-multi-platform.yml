@@ -27,39 +27,27 @@ jobs:
       shell: pwsh
       run: |
         choco install swig -y --no-progress
-        swig -version
 
-    - name: Add SWIG to PATH
-      shell: pwsh
-      run: |
-        $env:Path = "C:\ProgramData\chocolatey\bin;$env:Path"
-
-    - name: Patch DynArray.h (Fix C3878)
+    - name: Patch DynArray.h
       shell: pwsh
       run: |
         $file = "dnacalib/DNACalib/src/terse/types/DynArray.h"
-
         if (Test-Path $file) {
             $content = Get-Content $file -Raw
             $content = $content -replace 'std::copy\(start, end, stdext::checked_array_iterator<value_type\*>\(data\(\), size\(\)\)\);', 'std::copy(start, end, data());'
             Set-Content -Path $file -Value $content -Encoding utf8
-            Write-Host "DynArray.h patched successfully"
         }
 
     - name: Configure CMake
       shell: pwsh
       run: |
         $pythonDir = Split-Path (Get-Command python).Source
-
         cmake -S dnacalib -B build `
           -DCMAKE_BUILD_TYPE=Release `
           -DCMAKE_CXX_STANDARD=17 `
           -DCMAKE_CXX_STANDARD_REQUIRED=ON `
-          -DCMAKE_CXX_EXTENSIONS=OFF `
           -DCMAKE_CXX_FLAGS="/EHsc /W0 /std:c++17" `
-          -DCMAKE_C_FLAGS="/EHsc /W0" `
-          -DPython_EXECUTABLE="$pythonDir\python.exe" `
-          -DPython_ROOT_DIR="$pythonDir"
+          -DPython_EXECUTABLE="$pythonDir\python.exe"
 
     - name: Build
       shell: pwsh
@@ -70,14 +58,12 @@ jobs:
       shell: pwsh
       run: |
         New-Item -ItemType Directory -Force -Path "output"
-        Get-ChildItem build -Recurse -Include *.pyd | Copy-Item -Destination "output/" -Force
-        Get-ChildItem build -Recurse -Include dnacalib*.dll | Copy-Item -Destination "output/" -Force
 
-        if (Test-Path "build/dnacalib.py") {
-            Copy-Item "build/dnacalib.py" -Destination "output/" -Force
-        } elseif (Test-Path "dnacalib/dnacalib.py") {
-            Copy-Item "dnacalib/dnacalib.py" -Destination "output/" -Force
-        }
+        Get-ChildItem build -Recurse -Include *.pyd | Copy-Item -Destination "output/" -Force
+        Get-ChildItem build -Recurse -Include *dna*.dll, *dnacalib*.dll | Copy-Item -Destination "output/" -Force
+
+        Get-ChildItem -Path . -Recurse -Include dnacalib.py, py3dna.py -ErrorAction SilentlyContinue |
+            Copy-Item -Destination "output/" -Force
 
         Get-ChildItem output
 
