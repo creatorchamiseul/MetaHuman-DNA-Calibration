@@ -1,11 +1,11 @@
-name: Build MetaHuman DNA Calibration for Blender 5.1 (Windows Only)
+name: Build MetaHuman DNA Calibration (Windows + Python 3.13)
 
 on:
   workflow_dispatch:
 
 jobs:
   build-windows:
-    name: Build on Windows (Python 3.13)
+    name: Build on Windows
     runs-on: windows-latest
 
     steps:
@@ -15,7 +15,7 @@ jobs:
         submodules: recursive
         lfs: true
 
-    - name: Set up Python 3.13 (Blender 5.1 Target)
+    - name: Set up Python 3.13
       uses: actions/setup-python@v5
       with:
         python-version: "3.13"
@@ -23,20 +23,16 @@ jobs:
     - name: Setup MSVC Compiler Env
       uses: ilammy/msvc-dev-cmd@v1
 
-    - name: Install SWIG via Chocolatey
+    - name: Install SWIG
       shell: pwsh
       run: |
         choco install swig -y --no-progress
         swig -version
-        python --version
 
     - name: Add SWIG to PATH
       shell: pwsh
       run: |
-        $chocoBin = "C:\ProgramData\chocolatey\bin"
-        if ($env:Path -notlike "*$chocoBin*") {
-            $env:Path = "$chocoBin;$env:Path"
-        }
+        $env:Path = "C:\ProgramData\chocolatey\bin;$env:Path"
         swig -version
 
     - name: Configure CMake
@@ -51,73 +47,26 @@ jobs:
           -DCMAKE_CXX_EXTENSIONS=OFF `
           -DCMAKE_CXX_FLAGS="/EHsc /W0 /std:c++17" `
           -DCMAKE_C_FLAGS="/EHsc /W0" `
-          -DCMAKE_POLICY_DEFAULT_CMP0091=NEW `
           -DPython_EXECUTABLE="$pythonDir\python.exe" `
           -DPython_ROOT_DIR="$pythonDir"
 
-    - name: Build C++ Library
+    - name: Build
       shell: pwsh
       run: |
         cmake --build build --config Release --parallel 4
 
-    - name: Show generated binary files
+    - name: Show generated files
       shell: pwsh
       run: |
-        Write-Host "=== Generated .pyd files ==="
+        Write-Host "=== .pyd files ==="
         Get-ChildItem build -Recurse -Include *.pyd | Select-Object FullName, Length
-        Write-Host "`n=== Generated .dll files ==="
+
+        Write-Host "`n=== .dll files ==="
         Get-ChildItem build -Recurse -Include *.dll | Select-Object FullName, Length
 
-    - name: Prepare Blender Addon Package
-      shell: pwsh
-      run: |
-        # 블렌더 애드온 폴더 구조 생성
-        New-Item -ItemType Directory -Force -Path "blender_addon/metahuman_dna"
-        New-Item -ItemType Directory -Force -Path "blender_addon/metahuman_dna/lib"
-
-        # 소스 복사
-        if (Test-Path "dna") { Copy-Item -Path "dna" -Destination "blender_addon/metahuman_dna/" -Recurse -Force }
-        Copy-Item -Path "dnacalib" -Destination "blender_addon/metahuman_dna/" -Recurse -Force
-        if (Test-Path "dna_viewer") { Copy-Item -Path "dna_viewer" -Destination "blender_addon/metahuman_dna/" -Recurse -Force }
-
-        # 빌드된 바이너리 복사
-        Get-ChildItem build -Recurse -Include *.pyd, *.dll, *.lib | ForEach-Object {
-            Copy-Item -Path $_.FullName -Destination "blender_addon/metahuman_dna/lib/" -Force
-        }
-
-        # __init__.py 생성
-        $init_content = @"
-bl_info = {
-    "name": "MetaHuman DNA Calibration Tools",
-    "author": "Epic Games / Custom Build",
-    "version": (1, 0, 0),
-    "blender": (5, 1, 0),
-    "location": "View3D > Sidebar > MetaHuman",
-    "description": "MetaHuman DNA Calibration tools for Blender 5.1",
-    "category": "Animation",
-}
-
-import sys
-import os
-
-def register():
-    lib_path = os.path.join(os.path.dirname(__file__), "lib")
-    if lib_path not in sys.path:
-        sys.path.insert(0, lib_path)
-    print("MetaHuman DNA Calibration registered successfully for Blender 5.1")
-
-def unregister():
-    print("MetaHuman DNA Calibration unregistered")
-"@
-        Set-Content -Path "blender_addon/metahuman_dna/__init__.py" -Value $init_content -Encoding utf8
-
-    - name: Zip Addon Package
-      shell: pwsh
-      run: |
-        Compress-Archive -Path "blender_addon/metahuman_dna" -DestinationPath "metahuman_dna_blender5.1_windows.zip" -Force
-
-    - name: Upload Addon Archive
+    - name: Upload Build Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: MetaHuman-DNA-Blender5.1-Addon
-        path: metahuman_dna_blender5.1_windows.zip
+        name: dnacalib-windows-python3.13
+        path: build
+        retention-days: 7
